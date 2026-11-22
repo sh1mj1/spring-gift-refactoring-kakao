@@ -7,6 +7,8 @@ import gift.order.KakaoMessageClient;
 import gift.order.OrderRequest;
 import gift.order.OrderResponse;
 import gift.product.ProductResponse;
+import gift.wish.Wish;
+import gift.wish.WishRepository;
 import gift.wish.WishRequest;
 import gift.wish.WishResponse;
 import org.junit.jupiter.api.DisplayName;
@@ -14,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.web.client.RestClientException;
 
 import java.util.Map;
@@ -46,8 +49,11 @@ class OrderingAcceptanceTest extends HttpAcceptanceTest {
     @MockitoBean
     private KakaoMessageClient kakaoMessageClient;
 
+    @MockitoSpyBean
+    private WishRepository wishRepository;
+
     @Test
-    @DisplayName("회원이 포인트로 주문하면 주문이 기록되고 재고와 포인트가 줄며 위시는 남는다.")
+    @DisplayName("회원이 포인트로 주문하면 주문이 기록되고 재고와 포인트가 줄며 해당 위시만 삭제된다.")
     void buysProductWithPoints() {
         // given
         String email = "successful-order@example.com";
@@ -56,7 +62,13 @@ class OrderingAcceptanceTest extends HttpAcceptanceTest {
         var product = createProduct("주문 성공 상품", 25000);
         String options = optionsPath(product);
         var option = createOption(options, "주문 옵션", 50);
-        var wish = body(authenticated(WISHES, POST, buyer, new WishRequest(product.id()), WishResponse.class), CREATED);
+        body(authenticated(WISHES, POST, buyer, new WishRequest(product.id()), WishResponse.class), CREATED);
+        var otherProduct = createProduct("구매하지 않은 상품", 25000);
+        var otherWish = body(authenticated(WISHES, POST, buyer, new WishRequest(otherProduct.id()),
+            WishResponse.class), CREATED);
+        String otherMember = register("other-wish-owner@example.com");
+        var otherMemberWish = body(authenticated(WISHES, POST, otherMember, new WishRequest(product.id()),
+            WishResponse.class), CREATED);
         var input = new OrderRequest(option.id(), 1, "생일 축하해!");
         assertThat(memberPoints(memberId, email)).isEqualTo(30000);
         assertThat(orders(buyer)).isEmpty();
@@ -74,9 +86,8 @@ class OrderingAcceptanceTest extends HttpAcceptanceTest {
         var content = orders(buyer);
         assertThat(content).hasSize(1);
         assertThat(content.get(0).path("id").longValue()).isEqualTo(order.id());
-        var wishes = body(authenticated(WISHES, GET, buyer, null, JsonNode.class), OK).path("content");
-        assertThat(wishes).hasSize(1);
-        assertThat(wishes.get(0).path("id").longValue()).isEqualTo(wish.id());
+        assertOnlyWish(buyer, otherWish);
+        assertOnlyWish(otherMember, otherMemberWish);
     }
 
     @Test
@@ -170,7 +181,9 @@ class OrderingAcceptanceTest extends HttpAcceptanceTest {
         String email = "notification-failure@example.com";
         String buyer = fundedBuyer(email);
         long memberId = listedId(MEMBERS, email);
-        String options = optionsPath(createProduct("알림 실패 상품", 25000));
+        var product = createProduct("알림 실패 상품", 25000);
+        String options = optionsPath(product);
+        var wish = body(authenticated(WISHES, POST, buyer, new WishRequest(product.id()), WishResponse.class), CREATED);
         var option = createOption(options, "알림 실패 옵션", 50);
         doThrow(new RestClientException("test failure")).when(kakaoMessageClient).sendToMe(eq(email), any(), any());
 
@@ -181,6 +194,8 @@ class OrderingAcceptanceTest extends HttpAcceptanceTest {
         assertThat(stock(options, option.id())).isEqualTo(50);
         assertThat(memberPoints(memberId, email)).isEqualTo(30000);
         assertThat(orders(buyer)).isEmpty();
+        assertOnlyWish(buyer, wish);
+        verify(wishRepository).delete(any(Wish.class));
     }
 
     @Test
@@ -237,6 +252,33 @@ class OrderingAcceptanceTest extends HttpAcceptanceTest {
         assertThat(stock(options, option.id())).isEqualTo(1);
         assertThat(memberPoints(memberId, email)).isEqualTo(30000);
         assertThat(orders(buyer)).isEmpty();
+    }
+
+    @Test
+    void rollsBackWhenWishDeletionFails() {
+        String email = "wish-cleanup-failure@example.com";
+        String buyer = fundedBuyer(email);
+        long memberId = listedId(MEMBERS, email);
+        var product = createProduct("위시 삭제 실패 상품", 25000);
+        String options = optionsPath(product);
+        var option = createOption(options, "위시 삭제 실패 옵션", 50);
+        var wish = body(authenticated(WISHES, POST, buyer, new WishRequest(product.id()), WishResponse.class), CREATED);
+        doThrow(new IllegalStateException("test deletion failure")).when(wishRepository).delete(any(Wish.class));
+
+        var response = authenticated(ORDERS, POST, buyer, new OrderRequest(option.id(), 1, null), JsonNode.class);
+
+        assertError(response, INTERNAL_SERVER_ERROR, ORDERS);
+        verifyNoInteractions(kakaoMessageClient);
+        assertThat(stock(options, option.id())).isEqualTo(50);
+        assertThat(memberPoints(memberId, email)).isEqualTo(30000);
+        assertThat(orders(buyer)).isEmpty();
+        assertOnlyWish(buyer, wish);
+    }
+
+    private void assertOnlyWish(String buyer, WishResponse wish) {
+        var wishes = body(authenticated(WISHES, GET, buyer, null, JsonNode.class), OK).path("content");
+        assertThat(wishes).hasSize(1);
+        assertThat(wishes.get(0).path("id").longValue()).isEqualTo(wish.id());
     }
 
     private String registerWithKakao(String email) {
