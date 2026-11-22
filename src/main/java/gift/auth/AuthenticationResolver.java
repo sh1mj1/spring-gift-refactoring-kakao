@@ -24,8 +24,8 @@ public class AuthenticationResolver {
 
     public Member extractMember(String authorization) {
         try {
-            final String token = authorization.replace("Bearer ", "");
-            final String email = jwtProvider.getEmail(token);
+            final String accessToken = authorization.replace("Bearer ", "");
+            final String email = jwtProvider.getEmail(accessToken);
             return memberRepository.findByEmail(email).orElse(null);
         } catch (Exception e) {
             return null;

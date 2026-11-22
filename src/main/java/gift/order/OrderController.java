@@ -83,17 +83,19 @@ public class OrderController {
             return ResponseEntity.notFound().build();
         }
 
+        var orderQuantity = request.quantity();
+
         // subtract stock
-        option.subtractQuantity(request.quantity());
+        option.subtractQuantity(orderQuantity);
         optionRepository.save(option);
 
         // deduct points
-        var price = option.getProduct().getPrice() * request.quantity();
-        member.deductPoint(price);
+        var totalPrice = option.getProduct().getPrice() * orderQuantity;
+        member.deductPoint(totalPrice);
         memberRepository.save(member);
 
         // save order
-        var saved = orderRepository.save(new Order(option, member.getId(), request.quantity(), request.message()));
+        var saved = orderRepository.save(new Order(option, member.getId(), orderQuantity, request.message()));
 
         // best-effort kakao notification
         sendKakaoMessageIfPossible(member, saved, option);

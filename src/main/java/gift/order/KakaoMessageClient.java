@@ -13,7 +13,7 @@ public class KakaoMessageClient {
         this.restClient = builder.build();
     }
 
-    public void sendToMe(String accessToken, Order order, Product product) {
+    public void sendToMe(String kakaoAccessToken, Order order, Product product) {
         var templateObject = buildTemplate(order, product);
 
         var params = new LinkedMultiValueMap<String, String>();
@@ -21,7 +21,7 @@ public class KakaoMessageClient {
 
         restClient.post()
             .uri("https://kapi.kakao.com/v2/api/talk/memo/default/send")
-            .header("Authorization", "Bearer " + accessToken)
+            .header("Authorization", "Bearer " + kakaoAccessToken)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(params)
             .retrieve()
@@ -30,7 +30,7 @@ public class KakaoMessageClient {
 
     private String buildTemplate(Order order, Product product) {
         var totalPrice = String.format("%,d", product.getPrice() * order.getQuantity());
-        var message = order.getMessage() != null && !order.getMessage().isBlank()
+        var giftMessage = order.getMessage() != null && !order.getMessage().isBlank()
             ? "\\n\\n💌 " + order.getMessage()
             : "";
         return """
@@ -45,7 +45,7 @@ public class KakaoMessageClient {
             order.getOption().getName(),
             order.getQuantity(),
             totalPrice,
-            message
+            giftMessage
         );
     }
 }

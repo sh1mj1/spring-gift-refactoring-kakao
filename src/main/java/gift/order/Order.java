@@ -30,11 +30,11 @@ public class Order {
     protected Order() {
     }
 
-    public Order(Option option, Long memberId, int quantity, String message) {
+    public Order(Option option, Long memberId, int orderQuantity, String giftMessage) {
         this.option = option;
         this.memberId = memberId;
-        this.quantity = quantity;
-        this.message = message;
+        this.quantity = orderQuantity;
+        this.message = giftMessage;
         this.orderDateTime = LocalDateTime.now();
     }
 

@@ -54,16 +54,17 @@ public class KakaoAuthController {
 
     @GetMapping(path = "/callback")
     public ResponseEntity<TokenResponse> callback(@RequestParam("code") String code) {
-        KakaoLoginClient.KakaoTokenResponse kakaoToken = kakaoLoginClient.requestAccessToken(code);
-        KakaoLoginClient.KakaoUserResponse kakaoUser = kakaoLoginClient.requestUserInfo(kakaoToken.accessToken());
+        KakaoLoginClient.KakaoTokenResponse kakaoTokenResponse = kakaoLoginClient.requestAccessToken(code);
+        String kakaoAccessToken = kakaoTokenResponse.accessToken();
+        KakaoLoginClient.KakaoUserResponse kakaoUser = kakaoLoginClient.requestUserInfo(kakaoAccessToken);
         String email = kakaoUser.email();
 
         Member member = memberRepository.findByEmail(email)
             .orElseGet(() -> new Member(email));
-        member.updateKakaoAccessToken(kakaoToken.accessToken());
+        member.updateKakaoAccessToken(kakaoAccessToken);
         memberRepository.save(member);
 
-        String token = jwtProvider.createToken(member.getEmail());
-        return ResponseEntity.ok(new TokenResponse(token));
+        String accessToken = jwtProvider.createToken(member.getEmail());
+        return ResponseEntity.ok(new TokenResponse(accessToken));
     }
 }

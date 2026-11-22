@@ -32,14 +32,14 @@ public class JwtProvider {
     /**
      * Extracts the email (subject) from a signed JWT token.
      *
-     * @param token the JWT token string
+     * @param accessToken the JWT token string
      * @return the email stored in the token's subject claim
      */
-    public String getEmail(String token) {
+    public String getEmail(String accessToken) {
         return Jwts.parser()
             .verifyWith(key)
             .build()
-            .parseSignedClaims(token)
+            .parseSignedClaims(accessToken)
             .getPayload()
             .getSubject();
     }
