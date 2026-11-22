@@ -1,6 +1,5 @@
 package gift.member;
 
-import gift.auth.JwtProvider;
 import gift.auth.TokenResponse;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,36 +20,22 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/members")
 public class MemberController {
-    private final MemberRepository memberRepository;
-    private final JwtProvider jwtProvider;
+    private final MemberService memberService;
 
     @Autowired
-    public MemberController(MemberRepository memberRepository, JwtProvider jwtProvider) {
-        this.memberRepository = memberRepository;
-        this.jwtProvider = jwtProvider;
+    public MemberController(MemberService memberService) {
+        this.memberService = memberService;
     }
 
     @PostMapping("/register")
     public ResponseEntity<TokenResponse> register(@Valid @RequestBody MemberRequest request) {
-        if (memberRepository.existsByEmail(request.email())) {
-            throw new IllegalArgumentException("Email is already registered.");
-        }
-
-        final Member member = memberRepository.save(new Member(request.email(), request.password()));
-        final String accessToken = jwtProvider.createToken(member.getEmail());
+        String accessToken = memberService.register(request);
         return ResponseEntity.status(HttpStatus.CREATED).body(new TokenResponse(accessToken));
     }
 
     @PostMapping("/login")
     public ResponseEntity<TokenResponse> login(@Valid @RequestBody MemberRequest request) {
-        final Member member = memberRepository.findByEmail(request.email())
-            .orElseThrow(() -> new IllegalArgumentException("Invalid email or password."));
-
-        if (member.getPassword() == null || !member.getPassword().equals(request.password())) {
-            throw new IllegalArgumentException("Invalid email or password.");
-        }
-
-        final String accessToken = jwtProvider.createToken(member.getEmail());
+        String accessToken = memberService.login(request);
         return ResponseEntity.ok(new TokenResponse(accessToken));
     }
 
