@@ -7,9 +7,12 @@ import gift.option.OptionRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.RestClientException;
 
 @Service
 public class OrderService {
+    private static final int MAX_NOTIFICATION_ATTEMPTS = 6;
     private final OrderRepository orderRepository;
     private final OptionRepository optionRepository;
     private final MemberRepository memberRepository;
@@ -33,11 +36,17 @@ public class OrderService {
 
     // After authentication: validate option, subtract stock, deduct points, save order,
     // cleanup wish, and send kakao notification.
+    @Transactional
     public Order create(Member member, OrderRequest request) {
         // validate option
         var option = optionRepository.findById(request.optionId()).orElse(null);
         if (option == null) {
             return null;
+        }
+
+        String kakaoAccessToken = member.getKakaoAccessToken();
+        if (kakaoAccessToken == null || kakaoAccessToken.isBlank()) {
+            throw new IllegalStatusException("주문하려면 카카오 로그인이 필요합니다.");
         }
 
         var orderQuantity = request.quantity();
@@ -54,19 +63,22 @@ public class OrderService {
         // save order
         var saved = orderRepository.save(new Order(option, member.getId(), orderQuantity, request.message()));
 
-        // best-effort kakao notification
-        sendKakaoMessageIfPossible(member, saved, option);
+        orderRepository.flush();
+        sendKakaoMessage(kakaoAccessToken, saved, option);
         return saved;
     }
 
-    private void sendKakaoMessageIfPossible(Member member, Order order, Option option) {
-        if (member.getKakaoAccessToken() == null) {
-            return;
-        }
-        try {
-            var product = option.getProduct();
-            kakaoMessageClient.sendToMe(member.getKakaoAccessToken(), order, product);
-        } catch (Exception ignored) {
+    private void sendKakaoMessage(String kakaoAccessToken, Order order, Option option) {
+        var product = option.getProduct();
+        for (int attempt = 1; attempt <= MAX_NOTIFICATION_ATTEMPTS; attempt++) {
+            try {
+                kakaoMessageClient.sendToMe(kakaoAccessToken, order, product);
+                return;
+            } catch (RestClientException failure) {
+                if (attempt == MAX_NOTIFICATION_ATTEMPTS) {
+                    throw new IllegalStatusException("카카오 메시지를 보내지 못해 주문이 취소되었습니다.", failure);
+                }
+            }
         }
     }
 }

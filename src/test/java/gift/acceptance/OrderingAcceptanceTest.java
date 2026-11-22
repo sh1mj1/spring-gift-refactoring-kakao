@@ -1,7 +1,9 @@
 package gift.acceptance;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import gift.member.MemberRepository;
 import gift.option.OptionResponse;
+import gift.order.KakaoMessageClient;
 import gift.order.OrderRequest;
 import gift.order.OrderResponse;
 import gift.product.ProductResponse;
@@ -9,14 +11,25 @@ import gift.wish.WishRequest;
 import gift.wish.WishResponse;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.annotation.DirtiesContext;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.web.client.RestClientException;
 
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.http.HttpMethod.GET;
 import static org.springframework.http.HttpMethod.POST;
 import static org.springframework.http.HttpStatus.CREATED;
+import static org.springframework.http.HttpStatus.FORBIDDEN;
 import static org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR;
 import static org.springframework.http.HttpStatus.NOT_FOUND;
 import static org.springframework.http.HttpStatus.OK;
@@ -26,6 +39,12 @@ class OrderingAcceptanceTest extends HttpAcceptanceTest {
     private static final String ORDERS = "/api/orders";
     private static final String MEMBERS = "/admin/members";
     private static final String WISHES = "/api/wishes";
+
+    @Autowired
+    private MemberRepository memberRepository;
+
+    @MockitoBean
+    private KakaoMessageClient kakaoMessageClient;
 
     @Test
     @DisplayName("회원이 포인트로 주문하면 주문이 기록되고 재고와 포인트가 줄며 위시는 남는다.")
@@ -48,6 +67,7 @@ class OrderingAcceptanceTest extends HttpAcceptanceTest {
         // then
         var order = body(response, CREATED);
         assertOrder(order, input);
+        verify(kakaoMessageClient).sendToMe(eq(email), any(), any());
         assertThat(response.getHeaders().getLocation()).hasToString(ORDERS + "/" + order.id());
         assertThat(stock(options, option.id())).isEqualTo(49);
         assertThat(memberPoints(memberId, email)).isEqualTo(5000);
@@ -60,11 +80,11 @@ class OrderingAcceptanceTest extends HttpAcceptanceTest {
     }
 
     @Test
-    @DisplayName("포인트가 부족한 주문은 실패하고 재고만 한 개 줄어든다.")
-    void insufficientPointsStillReduceStock() {
+    @DisplayName("포인트가 부족한 주문은 실패하고 재고를 유지한다.")
+    void insufficientPointsPreserveStock() {
         // given
         String email = "insufficient-order@example.com";
-        String buyer = register(email);
+        String buyer = registerWithKakao(email);
         long memberId = listedId(MEMBERS, email);
         String options = optionsPath(createProduct("주문 실패 상품", 25000));
         var option = createOption(options, "주문 실패 옵션", 50);
@@ -77,8 +97,9 @@ class OrderingAcceptanceTest extends HttpAcceptanceTest {
 
         // then
         assertError(response, INTERNAL_SERVER_ERROR, ORDERS);
-        assertThat(stock(options, option.id())).isEqualTo(49);
+        assertThat(stock(options, option.id())).isEqualTo(50);
         assertThat(memberPoints(memberId, email)).isZero();
+        verifyNoInteractions(kakaoMessageClient);
         assertThat(orders(buyer)).isEmpty();
     }
 
@@ -144,8 +165,90 @@ class OrderingAcceptanceTest extends HttpAcceptanceTest {
         assertThat(content.get(0).path("id").longValue()).isEqualTo(order.id());
     }
 
-    private String fundedBuyer(String email) {
+    @Test
+    void rollsBackWhenAllKakaoAttemptsFail() {
+        String email = "notification-failure@example.com";
+        String buyer = fundedBuyer(email);
+        long memberId = listedId(MEMBERS, email);
+        String options = optionsPath(createProduct("알림 실패 상품", 25000));
+        var option = createOption(options, "알림 실패 옵션", 50);
+        doThrow(new RestClientException("test failure")).when(kakaoMessageClient).sendToMe(eq(email), any(), any());
+
+        var response = authenticated(ORDERS, POST, buyer, new OrderRequest(option.id(), 1, null), String.class);
+
+        assertThat(body(response, FORBIDDEN)).isEqualTo("카카오 메시지를 보내지 못해 주문이 취소되었습니다.");
+        verify(kakaoMessageClient, times(6)).sendToMe(eq(email), any(), any());
+        assertThat(stock(options, option.id())).isEqualTo(50);
+        assertThat(memberPoints(memberId, email)).isEqualTo(30000);
+        assertThat(orders(buyer)).isEmpty();
+    }
+
+    @Test
+    void succeedsAfterRetry() {
+        String email = "notification-retry@example.com";
+        String buyer = fundedBuyer(email);
+        long memberId = listedId(MEMBERS, email);
+        String options = optionsPath(createProduct("알림 재시도 상품", 25000));
+        var option = createOption(options, "알림 재시도 옵션", 50);
+        doThrow(new RestClientException("test failure")).doNothing()
+            .when(kakaoMessageClient).sendToMe(eq(email), any(), any());
+
+        var order = body(authenticated(ORDERS, POST, buyer,
+            new OrderRequest(option.id(), 1, null), OrderResponse.class), CREATED);
+
+        verify(kakaoMessageClient, times(2)).sendToMe(eq(email), any(), any());
+        assertThat(stock(options, option.id())).isEqualTo(49);
+        assertThat(memberPoints(memberId, email)).isEqualTo(5000);
+        assertThat(orders(buyer).get(0).path("id").longValue()).isEqualTo(order.id());
+    }
+
+    @Test
+    void rejectsOrderWithoutKakaoToken() {
+        String email = "without-kakao@example.com";
         String buyer = register(email);
+        long memberId = listedId(MEMBERS, email);
+        redirectsTo(submitForm(MEMBERS + "/" + memberId + "/charge-point", Map.of("amount", "30000")), MEMBERS);
+        String options = optionsPath(createProduct("연결 확인 상품", 25000));
+        var option = createOption(options, "카카오 미연결 옵션", 50);
+
+        var response = authenticated(ORDERS, POST, buyer, new OrderRequest(option.id(), 1, null), String.class);
+
+        assertThat(body(response, FORBIDDEN)).isEqualTo("주문하려면 카카오 로그인이 필요합니다.");
+        verifyNoInteractions(kakaoMessageClient);
+        assertThat(stock(options, option.id())).isEqualTo(50);
+        assertThat(memberPoints(memberId, email)).isEqualTo(30000);
+        assertThat(orders(buyer)).isEmpty();
+    }
+
+    @Test
+    void preservesStateWhenStockOrOptionIsMissing() {
+        String email = "insufficient-stock@example.com";
+        String buyer = fundedBuyer(email);
+        long memberId = listedId(MEMBERS, email);
+        String options = optionsPath(createProduct("재고 부족 상품", 25000));
+        var option = createOption(options, "재고 부족 옵션", 1);
+
+        assertError(authenticated(ORDERS, POST, buyer,
+            new OrderRequest(option.id(), 2, null), JsonNode.class), INTERNAL_SERVER_ERROR, ORDERS);
+        assertThat(authenticated(ORDERS, POST, buyer,
+            new OrderRequest(Long.MAX_VALUE, 1, null), String.class).getStatusCode()).isEqualTo(NOT_FOUND);
+
+        verifyNoInteractions(kakaoMessageClient);
+        assertThat(stock(options, option.id())).isEqualTo(1);
+        assertThat(memberPoints(memberId, email)).isEqualTo(30000);
+        assertThat(orders(buyer)).isEmpty();
+    }
+
+    private String registerWithKakao(String email) {
+        String buyer = register(email);
+        var member = memberRepository.findByEmail(email).orElseThrow();
+        member.updateKakaoAccessToken(email);
+        memberRepository.save(member);
+        return buyer;
+    }
+
+    private String fundedBuyer(String email) {
+        String buyer = registerWithKakao(email);
         long id = listedId(MEMBERS, email);
         redirectsTo(submitForm(MEMBERS + "/" + id + "/charge-point", Map.of("amount", "30000")), MEMBERS);
         return buyer;

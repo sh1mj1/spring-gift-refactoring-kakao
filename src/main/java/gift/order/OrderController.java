@@ -3,7 +3,9 @@ package gift.order;
 import gift.auth.AuthenticationResolver;
 import jakarta.validation.Valid;
 import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -55,5 +57,10 @@ public class OrderController {
         }
         return ResponseEntity.created(URI.create("/api/orders/" + saved.getId()))
             .body(OrderResponse.from(saved));
+    }
+
+    @ExceptionHandler(IllegalStatusException.class)
+    public ResponseEntity<String> handleIllegalStatus(IllegalStatusException exception) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(exception.getMessage());
     }
 }
