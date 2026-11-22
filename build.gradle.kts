@@ -1,4 +1,5 @@
 plugins {
+    checkstyle
     kotlin("jvm") version "1.9.25"
     kotlin("plugin.spring") version "1.9.25"
     kotlin("plugin.jpa") version "1.9.25"
@@ -15,6 +16,15 @@ java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(21)
     }
+}
+
+checkstyle {
+    toolVersion = "10.26.1"
+    sourceSets = listOf(project.sourceSets.main.get())
+}
+
+tasks.named("checkstyleTest") {
+    enabled = false
 }
 
 repositories {
