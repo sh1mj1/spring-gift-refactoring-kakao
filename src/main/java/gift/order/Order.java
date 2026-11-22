@@ -38,6 +38,10 @@ public class Order {
         this.orderDateTime = LocalDateTime.now();
     }
 
+    public int totalPrice() {
+        return option.getProduct().getPrice() * quantity;
+    }
+
     public Long getId() {
         return id;
     }

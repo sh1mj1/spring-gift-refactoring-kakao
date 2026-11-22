@@ -58,12 +58,12 @@ public class OrderService {
         optionRepository.save(option);
 
         // deduct points
-        var totalPrice = option.getProduct().getPrice() * orderQuantity;
-        member.deductPoint(totalPrice);
+        var order = new Order(option, member.getId(), orderQuantity, request.message());
+        member.deductPoint(order.totalPrice());
         memberRepository.save(member);
 
         // save order
-        var saved = orderRepository.save(new Order(option, member.getId(), orderQuantity, request.message()));
+        var saved = orderRepository.save(order);
 
         wishRepository.findByMemberIdAndProductId(member.getId(), option.getProduct().getId())
             .ifPresent(wishRepository::delete);
