@@ -1,0 +1,183 @@
+package gift.acceptance;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import gift.option.OptionResponse;
+import gift.order.OrderRequest;
+import gift.order.OrderResponse;
+import gift.product.ProductResponse;
+import gift.wish.WishRequest;
+import gift.wish.WishResponse;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.test.annotation.DirtiesContext;
+
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.http.HttpMethod.GET;
+import static org.springframework.http.HttpMethod.POST;
+import static org.springframework.http.HttpStatus.CREATED;
+import static org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR;
+import static org.springframework.http.HttpStatus.NOT_FOUND;
+import static org.springframework.http.HttpStatus.OK;
+
+@DirtiesContext
+class OrderingAcceptanceTest extends HttpAcceptanceTest {
+    private static final String ORDERS = "/api/orders";
+    private static final String MEMBERS = "/admin/members";
+    private static final String WISHES = "/api/wishes";
+
+    @Test
+    @DisplayName("회원이 포인트로 주문하면 주문이 기록되고 재고와 포인트가 줄며 위시는 남는다.")
+    void buysProductWithPoints() {
+        // given
+        String email = "successful-order@example.com";
+        String buyer = fundedBuyer(email);
+        long memberId = listedId(MEMBERS, email);
+        var product = createProduct("주문 성공 상품", 25000);
+        String options = optionsPath(product);
+        var option = createOption(options, "주문 옵션", 50);
+        var wish = body(authenticated(WISHES, POST, buyer, new WishRequest(product.id()), WishResponse.class), CREATED);
+        var input = new OrderRequest(option.id(), 1, "생일 축하해!");
+        assertThat(memberPoints(memberId, email)).isEqualTo(30000);
+        assertThat(orders(buyer)).isEmpty();
+
+        // when
+        var response = authenticated(ORDERS, POST, buyer, input, OrderResponse.class);
+
+        // then
+        var order = body(response, CREATED);
+        assertOrder(order, input);
+        assertThat(response.getHeaders().getLocation()).hasToString(ORDERS + "/" + order.id());
+        assertThat(stock(options, option.id())).isEqualTo(49);
+        assertThat(memberPoints(memberId, email)).isEqualTo(5000);
+        var content = orders(buyer);
+        assertThat(content).hasSize(1);
+        assertThat(content.get(0).path("id").longValue()).isEqualTo(order.id());
+        var wishes = body(authenticated(WISHES, GET, buyer, null, JsonNode.class), OK).path("content");
+        assertThat(wishes).hasSize(1);
+        assertThat(wishes.get(0).path("id").longValue()).isEqualTo(wish.id());
+    }
+
+    @Test
+    @DisplayName("포인트가 부족한 주문은 실패하고 재고만 한 개 줄어든다.")
+    void insufficientPointsStillReduceStock() {
+        // given
+        String email = "insufficient-order@example.com";
+        String buyer = register(email);
+        long memberId = listedId(MEMBERS, email);
+        String options = optionsPath(createProduct("주문 실패 상품", 25000));
+        var option = createOption(options, "주문 실패 옵션", 50);
+        assertThat(stock(options, option.id())).isEqualTo(50);
+        assertThat(memberPoints(memberId, email)).isZero();
+        assertThat(orders(buyer)).isEmpty();
+
+        // when
+        var response = authenticated(ORDERS, POST, buyer, new OrderRequest(option.id(), 1, null), JsonNode.class);
+
+        // then
+        assertError(response, INTERNAL_SERVER_ERROR, ORDERS);
+        assertThat(stock(options, option.id())).isEqualTo(49);
+        assertThat(memberPoints(memberId, email)).isZero();
+        assertThat(orders(buyer)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("아직 주문하지 않은 회원의 주문 목록은 비어 있다.")
+    void listsEmptyOrders() {
+        // given
+        String buyer = register("empty-orders@example.com");
+
+        // when
+        var response = authenticated(ORDERS, GET, buyer, null, JsonNode.class);
+
+        // then
+        var page = body(response, OK);
+        assertThat(page.path("totalElements").intValue()).isZero();
+        assertThat(page.path("content").isArray()).isTrue();
+        assertThat(page.path("content")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("회원은 유효한 토큰만 인증 헤더에 넣어도 자신이 주문한 내역을 볼 수 있다.")
+    void listsOwnOrderWithBareToken() {
+        // given
+        String buyer = fundedBuyer("order-list@example.com");
+        var request = new OrderRequest(orderOption("주문 목록 상품"), 1, "주문 목록 메시지");
+        var order = body(authenticated(ORDERS, POST, buyer, request, OrderResponse.class), CREATED);
+        String token = buyer.substring("Bearer ".length());
+
+        // when
+        var response = authenticated(ORDERS, GET, token, null, JsonNode.class);
+
+        // then
+        var page = body(response, OK);
+        assertThat(page.path("totalElements").intValue()).isEqualTo(1);
+        var content = page.path("content");
+        assertThat(content).hasSize(1);
+        var entry = content.get(0);
+        assertThat(entry.path("id").longValue()).isEqualTo(order.id());
+        assertThat(entry.path("optionId").longValue()).isEqualTo(request.optionId());
+        assertThat(entry.path("quantity").intValue()).isEqualTo(1);
+        assertThat(entry.path("message").textValue()).isEqualTo("주문 목록 메시지");
+        assertThat(entry.path("orderDateTime").textValue()).isNotBlank();
+    }
+
+    @Test
+    @DisplayName("생성 응답에 담긴 주문 주소로 조회하면 404를 받지만 주문은 목록에 남는다.")
+    void rejectsOrderDetailAtCreationLocation() {
+        // given
+        String buyer = fundedBuyer("order-location@example.com");
+        var request = new OrderRequest(orderOption("주문 주소 상품"), 1, null);
+        var creation = authenticated(ORDERS, POST, buyer, request, OrderResponse.class);
+        var order = body(creation, CREATED);
+        String path = ORDERS + "/" + order.id();
+        assertThat(creation.getHeaders().getLocation()).hasToString(path);
+
+        // when
+        var response = authenticated(path, GET, buyer, null, JsonNode.class);
+
+        // then
+        assertError(response, NOT_FOUND, path);
+        var content = orders(buyer);
+        assertThat(content).hasSize(1);
+        assertThat(content.get(0).path("id").longValue()).isEqualTo(order.id());
+    }
+
+    private String fundedBuyer(String email) {
+        String buyer = register(email);
+        long id = listedId(MEMBERS, email);
+        redirectsTo(submitForm(MEMBERS + "/" + id + "/charge-point", Map.of("amount", "30000")), MEMBERS);
+        return buyer;
+    }
+
+    private long orderOption(String productName) {
+        String path = optionsPath(createProduct(productName, 25000));
+        return createOption(path, "주문 옵션", 50).id();
+    }
+
+    private String optionsPath(ProductResponse product) {
+        return "/api/products/" + product.id() + "/options";
+    }
+
+    private int stock(String path, long optionId) {
+        var options = body(http.getForEntity(path, OptionResponse[].class), OK);
+        assertThat(options).hasSize(1);
+        assertThat(options[0].id()).isEqualTo(optionId);
+        return options[0].quantity();
+    }
+
+    private JsonNode orders(String buyer) {
+        var content = body(authenticated(ORDERS, GET, buyer, null, JsonNode.class), OK).path("content");
+        assertThat(content.isArray()).isTrue();
+        return content;
+    }
+
+    private void assertOrder(OrderResponse order, OrderRequest request) {
+        assertThat(order.id()).isPositive();
+        assertThat(order.optionId()).isEqualTo(request.optionId());
+        assertThat(order.quantity()).isEqualTo(request.quantity());
+        assertThat(order.message()).isEqualTo(request.message());
+        assertThat(order.orderDateTime()).isNotNull();
+    }
+}
