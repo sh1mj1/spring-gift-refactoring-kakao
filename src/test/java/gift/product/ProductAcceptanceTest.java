@@ -41,34 +41,51 @@ class ProductAcceptanceTest {
     private ObjectMapper objectMapper;
 
     @Test
-    @DisplayName("방문자는 상품 6개를 보고 선택한 상품의 상세를 조회한다")
-    void visitorBrowsesProductsAndOpensDetails() throws JsonProcessingException {
-        JsonNode products = getProducts();
+    @DisplayName("상품이 6개 등록되어 있으면 방문자는 목록에서 6개 상품의 정보를 볼 수 있다.")
+    void visitorBrowsesProducts() throws JsonProcessingException {
+        // given
         JsonNode expectedProducts = objectMapper.readTree(EXPECTED_PRODUCTS);
-        assertThat(products).containsExactlyInAnyOrderElementsOf(expectedProducts);
 
-        JsonNode selectedProduct = expectedProducts.get(0);
+        // when
+        ResponseEntity<JsonNode> response = http.getForEntity(PRODUCTS, JsonNode.class);
+
+        // then
+        JsonNode products = assertProductList(response);
+        assertThat(products).containsExactlyInAnyOrderElementsOf(expectedProducts);
+    }
+
+    @Test
+    @DisplayName("방문자가 등록된 맥북 프로 16인치의 상세를 열면 해당 상품의 정보를 볼 수 있다.")
+    void visitorOpensProductDetails() throws JsonProcessingException {
+        // given
+        JsonNode selectedProduct = objectMapper.readTree(EXPECTED_PRODUCTS).get(0);
+
+        // when
         ResponseEntity<JsonNode> detail =
             http.getForEntity(PRODUCTS + "/{id}", JsonNode.class, selectedProduct.path("id").longValue());
 
+        // then
         assertThat(detail.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(detail.getBody()).isEqualTo(selectedProduct);
     }
 
     @Test
-    @DisplayName("없는 상품을 조회하면 404가 반환되고 상품 목록은 그대로다")
+    @DisplayName("방문자가 등록되지 않은 상품의 상세를 조회하면 404 응답을 받고 상품 목록은 그대로다.")
     void missingProductLeavesCatalogUnchanged() {
-        JsonNode before = getProducts();
+        // given
+        JsonNode before = assertProductList(http.getForEntity(PRODUCTS, JsonNode.class));
 
+        // when
         ResponseEntity<String> missing = http.getForEntity(PRODUCTS + "/{id}", String.class, 999999L);
 
+        // then
         assertThat(missing.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(missing.getBody()).isNullOrEmpty();
-        assertThat(getProducts()).containsExactlyInAnyOrderElementsOf(before);
+        JsonNode after = assertProductList(http.getForEntity(PRODUCTS, JsonNode.class));
+        assertThat(after).containsExactlyInAnyOrderElementsOf(before);
     }
 
-    private JsonNode getProducts() {
-        ResponseEntity<JsonNode> response = http.getForEntity(PRODUCTS, JsonNode.class);
+    private JsonNode assertProductList(ResponseEntity<JsonNode> response) {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         JsonNode page = response.getBody();
         assertThat(page).isNotNull();
